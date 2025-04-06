@@ -1,7 +1,7 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QWidget, QGridLayout, QPushButton, QLabel, QMessageBox, QVBoxLayout, QHBoxLayout
-from PyQt5.QtGui import QPalette, QColor, QPen
-from PyQt5.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QWidget, QGridLayout, QPushButton, QLabel, QMessageBox, QVBoxLayout, QHBoxLayout
+from PySide6.QtGui import QPalette, QColor, QPen
+from PySide6.QtCore import Qt
 from env import GameEnvironment, PieceType
 
 class GameGUI(QWidget):
@@ -22,7 +22,7 @@ class GameGUI(QWidget):
 
         # Creating the board
         self.buttons = [[None for _ in range(4)] for _ in range(8)]
-        for row in range(8):
+        for row in range(2):
             for col in range(4):
                 btn = QPushButton('', self)
                 btn.setFixedSize(80, 80)
@@ -58,7 +58,7 @@ class GameGUI(QWidget):
 
     def update_board(self):
         state = self.env.get_state()
-        for row in range(8):
+        for row in range(2):
             for col in range(4):
                 piece = state['board'][row][col]
                 btn = self.buttons[row][col]

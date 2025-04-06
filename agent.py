@@ -12,14 +12,13 @@ class DuelingDQNAgent:
         self.stateSize = stateSize
         self.actionSize = actionSize
         self.memory = deque(maxlen=200000)
-        self.gamma = 0.95    # discount rate
-        self.epsilon = 1.0  # exploration rate
+        self.gamma = 0.95
+        self.epsilon = 1.0
         self.epsilonMin = 0.05
         self.epsilonDecay = 0.995
         self.learningRate = 0.001
         self.model = self._buildModel()
         
-        # TensorBoard setup
         logDir = "logs/fit/" + time.strftime("%Y-%m-%d-%H-%M-%S")
         self.tensorboardCallback = tf.keras.callbacks.TensorBoard(log_dir=logDir, histogram_freq=1)
         self.writer = tf.summary.create_file_writer(logDir)
@@ -31,7 +30,6 @@ class DuelingDQNAgent:
         dense2 = Dense(64, activation='relu')(dense1)
         dense3 = Dense(32, activation='relu')(dense2)
         
-        # Dueling Architecture
         valueStream = Dense(1)(dense3)
         advantageStream = Dense(self.actionSize)(dense3)
         
@@ -64,28 +62,20 @@ class DuelingDQNAgent:
         for state, action, reward, nextState, done in minibatch:
             target = reward
             if not done:
-                target = reward + self.gamma * np.amax(self.model.predict(nextState)[0])
+                nextQValues = self.model.predict(nextState)
+                target = reward + self.gamma * np.amax(nextQValues[0])
             targetF = self.model.predict(state)
-            targetF[0][action] = np.clip(target, -1, 1)  # 对 Q 值进行裁剪
-            history = self.model.fit(state, targetF, epochs=1, verbose=0)
-            loss = history.history['loss'][0]
-            totalLoss += loss
+            totalQValues += np.sum(targetF)
+            targetF[0][action] = target
+            history = self.model.fit(state, targetF, epochs=1, verbose=0, callbacks=[self.tensorboardCallback])
+            totalLoss += history.history['loss'][0]
             totalReward += reward
-            totalQValues += np.amax(targetF[0])
-        
-        averageLoss = totalLoss / batchSize
-        averageQValue = totalQValues / batchSize
 
-        # TensorBoard logging
-        with self.writer.as_default():
-            tf.summary.scalar('loss', averageLoss, step=self.trainStep)
-            tf.summary.scalar('reward', totalReward, step=self.trainStep)
-            tf.summary.scalar('epsilon', self.epsilon, step=self.trainStep)
-            tf.summary.scalar('Q_value', averageQValue, step=self.trainStep)
-            self.trainStep += 1
-
+        self.trainStep += 1
         if self.epsilon > self.epsilonMin:
             self.epsilon *= self.epsilonDecay
+
+        return totalLoss / batchSize, totalReward / batchSize, totalQValues / batchSize
 
     def load(self, name):
         self.model.load_weights(name)
@@ -93,6 +83,11 @@ class DuelingDQNAgent:
     def save(self, name):
         self.model.save_weights(name)
 
+    def writeSummary(self, reward, loss, episode):
+        with self.writer.as_default():
+            tf.summary.scalar('reward', reward, step=episode)
+            tf.summary.scalar('loss', loss, step=episode)
+            self.writer.flush()
 class RandomAgent:
     def __init__(self, actionSize):
         self.actionSize = actionSize
