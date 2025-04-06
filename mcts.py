@@ -1,17 +1,41 @@
+# mcts.py
+# 实现了蒙特卡洛树搜索 (MCTS) 算法，用于在游戏中进行决策。
+# 该算法通过模拟游戏对局，评估不同动作的价值，并选择最优动作。
+
 import numpy as np
 import math
 import copy
 from collections import namedtuple
 
-from env import GameEnvironment, PieceType # 假设 env.py 在同一目录下
-from model import NeuralNetwork # 假设 model.py 在同一目录下
+from env import GameEnvironment, PieceType # 假设 env.py 在同一目录下，GameEnvironment 类和 PieceType 枚举定义了游戏环境和棋子类型
+from model import NeuralNetwork # 假设 model.py 在同一目录下，NeuralNetwork 类定义了神经网络模型
 
 # 定义一个结构体用于存储 MCTS 搜索结果
 MCTSResult = namedtuple("MCTSResult", ["action_probs", "root_value"]) # action_probs: 动作概率分布, root_value: 根节点评估值
 
 class Node:
-    """表示蒙特卡洛搜索树中的一个节点。"""
+    """
+    表示蒙特卡洛搜索树中的一个节点。
+
+    属性:
+        parent (Node): 父节点。
+        action_taken (dict): 从父节点到该节点所采取的动作。
+        state: 该节点代表的游戏状态。
+        children (dict): 子节点，映射: 动作索引 -> 子节点 Node。
+        visit_count (int): 访问次数。
+        total_value (float): 总价值 (Q 值)。
+        prior (float): 先验概率 (P 值)。
+    """
     def __init__(self, prior: float, state, parent=None, action_taken=None):
+        """
+        初始化 MCTS 树节点。
+
+        Args:
+            prior (float): 该节点的先验概率，由神经网络预测得到。
+            state: 该节点代表的游戏状态。
+            parent (Node, optional): 父节点。默认为 None。
+            action_taken (dict, optional): 从父节点到该节点所采取的动作。默认为 None。
+        """
         self.parent = parent # 父节点
         self.action_taken = action_taken # 到达此节点的动作 (字典格式)
         self.state = state # 此节点代表的游戏状态 (可以是 NN 输入张量或环境状态字典)
@@ -22,7 +46,12 @@ class Node:
         self.prior = prior # P 值 (来自神经网络的先验概率)
 
     def expand(self, action_priors: np.ndarray, state):
-        """通过为所有有效动作创建子节点来扩展该节点。"""
+        """通过为所有有效动作创建子节点来扩展该节点。
+
+        Args:
+            action_priors (np.ndarray): 动作的先验概率分布，由神经网络预测得到。
+            state: 扩展节点的游戏状态。
+        """
         self.state = state # 如果需要，更新状态 (例如，在揭棋之后)
         valid_actions_map = self._get_valid_actions_map(state) # 获取索引格式的有效动作映射
 
@@ -32,7 +61,14 @@ class Node:
                 self.children[action_index] = Node(prior=prior, state=None, parent=self, action_taken=valid_actions_map[action_index])
 
     def select_child(self, c_puct: float):
-        """选择具有最高 UCB 分数的子节点。"""
+        """选择具有最高 UCB (Upper Confidence Bound) 分数的子节点。
+
+        Args:
+            c_puct (float): 控制探索程度的常数。
+
+        Returns:
+            tuple: 包含最佳动作索引和对应的子节点的元组。
+        """
         best_score = -np.inf
         best_action = -1
         best_child = None
@@ -47,7 +83,17 @@ class Node:
         return best_action, best_child # 返回最佳动作索引和对应的子节点
 
     def _ucb_score(self, child, c_puct: float) -> float:
-        """计算子节点的上置信界 (UCB) 分数。"""
+        """计算子节点的上置信界 (UCB) 分数。
+
+        UCB 分数用于平衡探索和利用。
+
+        Args:
+            child (Node): 要计算 UCB 分数的子节点。
+            c_puct (float): 控制探索程度的常数。
+
+        Returns:
+            float: 子节点的 UCB 分数。
+        """
         # PUCT 算法的 UCB 计算
         pb_c = math.log((self.visit_count + 1e-6) / (child.visit_count + 1e-6)) * c_puct # 探索项调整因子
         pb_c += math.sqrt(self.visit_count) / (child.visit_count + 1) * child.prior # 探索项主体
@@ -56,16 +102,31 @@ class Node:
         return q_value + pb_c # UCB 分数 = 利用项 + 探索项
 
     def update_value(self, value: float):
-        """更新节点的访问次数和总价值。"""
+        """更新节点的访问次数和总价值。
+
+        Args:
+            value (float): 从该节点开始的模拟的价值。
+        """
         self.visit_count += 1
         self.total_value += value
 
     def is_leaf(self) -> bool:
-        """检查节点是否为叶节点 (没有子节点)。"""
+        """检查节点是否为叶节点 (没有子节点)。
+
+        Returns:
+            bool: 如果节点是叶节点，则返回 True，否则返回 False。
+        """
         return not self.children
 
     def _get_valid_actions_map(self, state):
-        """从环境中获取有效动作，并将它们映射到索引。"""
+        """从环境中获取有效动作，并将它们映射到索引。
+
+        Args:
+            state: 游戏状态。
+
+        Returns:
+            dict: 有效动作的映射，键是动作索引，值是动作字典。
+        """
         env = GameEnvironment() # 创建一个临时环境以使用其方法
         # 需要根据 state 字典重建环境状态，这比较复杂
         # 假设 state 包含足够的信息或者可以重建环境
@@ -85,7 +146,15 @@ class Node:
         return action_map
 
     def _map_action_dict_to_index(self, action_dict, board):
-        """将来自 env.py 的动作字典映射到一个扁平索引 (0-72)。"""
+        """将来自 env.py 的动作字典映射到一个扁平索引 (0-72)。
+
+        Args:
+            action_dict (dict): 动作字典，包含动作类型和相关参数。
+            board: 棋盘状态。
+
+        Returns:
+            int: 动作的扁平索引。
+        """
         action_type = action_dict['type']
         if action_type == 'reveal': # 揭棋动作
             row, col = action_dict['position']
@@ -119,7 +188,14 @@ class Node:
             return None
 
     def _map_index_to_action_dict(self, index: int):
-        """将扁平索引 (0-72) 映射回动作字典。"""
+        """将扁平索引 (0-72) 映射回动作字典。
+
+        Args:
+            index (int): 动作的扁平索引。
+
+        Returns:
+            dict: 对应的动作字典。
+        """
         if 0 <= index <= 7: # 揭棋 (0-7)
             row = index // 4
             col = index % 4
@@ -143,11 +219,31 @@ class Node:
 
 
 class MCTS:
-    """Manages the Monte Carlo Tree Search process."""
+    """
+    管理蒙特卡洛树搜索 (MCTS) 过程。
+
+    属性:
+        env (GameEnvironment): 游戏环境。
+        network (NeuralNetwork): 神经网络模型。
+        c_puct (float): 探索常数。
+        num_simulations (int): 模拟次数。
+        temperature (float): 温度参数，用于控制探索程度。
+        dirichlet_alpha (float): Dirichlet 噪声的 alpha 参数。
+        dirichlet_epsilon (float): Dirichlet 噪声的 epsilon 参数。
+        action_size (int): 动作空间大小。
+    """
     def __init__(self, environment: GameEnvironment, network: NeuralNetwork, config):
+        """
+        初始化 MCTS 对象。
+
+        Args:
+            environment (GameEnvironment): 游戏环境。
+            network (NeuralNetwork): 神经网络模型。
+            config (dict): MCTS 的配置参数。
+        """
         self.env = environment # A *copy* might be needed per simulation
         self.network = network
-        self.c_puct = config.get('c_puct', 1.0) # Exploration constant
+        self.c_puct = config.get('c_puct', 1.0) # 探索常数
         self.num_simulations = config.get('num_mcts_simulations', 100)
         self.temperature = config.get('temperature', 1.0) # For action selection during self-play
         self.dirichlet_alpha = config.get('dirichlet_alpha', 0.3)
@@ -155,7 +251,16 @@ class MCTS:
         self.action_size = 73 # Defined based on env.py analysis
 
     def run(self, initial_state, initial_env_state_dict):
-        """Runs the MCTS search from the given state."""
+        """
+        从给定的状态运行 MCTS 搜索。
+
+        Args:
+            initial_state: 初始状态 (神经网络的输入张量)。
+            initial_env_state_dict (dict): 初始环境状态字典。
+
+        Returns:
+            MCTSResult: 包含动作概率分布和根节点评估值的 MCTS 结果。
+        """
         root_node = Node(prior=0, state=initial_state) # State here is the NN input tensor
 
         # Initial expansion of the root node
@@ -176,54 +281,56 @@ class MCTS:
         # For now, assume we can get valid actions somehow
         valid_actions_map = self._get_valid_actions_map_from_env_dict(initial_env_state_dict)
 
+        # 根据有效动作掩盖策略概率
         masked_policy_probs = np.zeros_like(policy_probs)
         for idx in valid_actions_map.keys():
              masked_policy_probs[idx] = policy_probs[idx]
         if np.sum(masked_policy_probs) > 0:
-             masked_policy_probs /= np.sum(masked_policy_probs) # Normalize
+             masked_policy_probs /= np.sum(masked_policy_probs) # 归一化
         else:
-             # Handle cases where no valid actions have non-zero probability (should be rare)
+             # 处理没有有效动作具有非零概率的情况 (应该很少见)
              print("Warning: No valid actions found or all have zero probability.")
-             # Assign uniform probability to valid actions
+             # 为有效动作分配均匀概率
              num_valid = len(valid_actions_map)
              if num_valid > 0:
                  for idx in valid_actions_map.keys():
                      masked_policy_probs[idx] = 1.0 / num_valid
 
 
-        root_node.expand(masked_policy_probs, initial_env_state_dict) # Pass env state dict for expansion logic
+        root_node.expand(masked_policy_probs, initial_env_state_dict) # 传递环境状态字典以进行扩展
 
+        # 模拟循环
         for _ in range(self.num_simulations):
-            node = root_node
-            search_path = [node]
-            current_env = self._create_env_from_dict(initial_env_state_dict) # Create a fresh env copy for simulation
+            node = root_node # 从根节点开始
+            search_path = [node] # 存储搜索路径
+            current_env = self._create_env_from_dict(initial_env_state_dict) # 为模拟创建一个新的环境副本
 
-            # 1. Select
-            while not node.is_leaf():
-                action_idx, node = node.select_child(self.c_puct)
-                search_path.append(node)
-                # Apply action to the simulation environment
-                action_dict = node.action_taken # Get the original dict action stored during expansion
+        # 1. 选择 (Selection)
+            while not node.is_leaf(): # 当节点不是叶节点时
+                action_idx, node = node.select_child(self.c_puct) # 选择具有最高 UCB 分数的子节点
+                search_path.append(node) # 将所选节点添加到搜索路径
+                # 将动作应用于模拟环境
+                action_dict = node.action_taken # 获取扩展期间存储的原始字典动作
                 if action_dict:
-                     # Handle 'stay' action position if needed
+                     # 如果需要，处理 'stay' 动作的位置
                      if action_dict['type'] == 'stay' and action_dict.get('position') is None:
-                         # Try to infer position if possible, or handle in env.step
-                         pass # Requires logic based on game rules
-                     _, _, done = current_env.step(action_dict)
+                         # 尝试推断位置 (如果可能)，或在 env.step 中处理
+                         pass # 需要基于游戏规则的逻辑
+                     _, _, done = current_env.step(action_dict) # 执行动作
                      if done:
-                         break # Stop simulation if game ends
+                         break # 如果游戏结束，则停止模拟
 
-            # 2. Expand & Evaluate
-            parent = search_path[-2]
-            state_for_nn = self._get_nn_input_from_env(current_env) # Convert env state to NN input
+            # 2. 扩展 & 评估 (Expand & Evaluate)
+            parent = search_path[-2] # 获取父节点
+            state_for_nn = self._get_nn_input_from_env(current_env) # 将环境状态转换为 NN 输入
 
-            value = current_env.get_reward(done) # Get terminal reward if game ended
-            if not done:
-                policy_logits, value_estimate = self.network.predict(np.expand_dims(state_for_nn, axis=0))
-                policy_probs = np.softmax(policy_logits[0])
-                value = value_estimate[0][0] # Get scalar value
+            value = current_env.get_reward(done) # 如果游戏结束，则获取终端奖励
+            if not done: # 如果游戏未结束
+                policy_logits, value_estimate = self.network.predict(np.expand_dims(state_for_nn, axis=0)) # 使用 NN 预测策略和价值
+                policy_probs = np.softmax(policy_logits[0]) # 将 logits 转换为概率
+                value = value_estimate[0][0] # 获取标量价值
 
-                # Get valid actions for the new state
+                # 获取新状态的有效动作
                 valid_actions_map = self._get_valid_actions_map_from_env(current_env)
                 masked_policy_probs = np.zeros_like(policy_probs)
                 for idx in valid_actions_map.keys():
@@ -236,42 +343,42 @@ class MCTS:
                         for idx in valid_actions_map.keys():
                             masked_policy_probs[idx] = 1.0 / num_valid
 
-                # Pass the current environment state dict for expansion
+                # 传递当前环境状态字典以进行扩展
                 node.expand(masked_policy_probs, current_env.get_state())
 
-            # 3. Backpropagate
-            # Value should be from the perspective of the player *at the start of the simulation*
-            # MCTS value is typically relative to the current player at that node.
-            # AlphaZero uses game outcome (-1, 0, 1) or network value estimate.
-            # Need to ensure value is correctly negated for opponent turns.
+            # 3. 反向传播 (Backpropagate)
+            # 价值应来自模拟开始时玩家的角度
+            # MCTS 价值通常相对于该节点中的当前玩家。
+            # AlphaZero 使用游戏结果 (-1, 0, 1) 或网络价值估计。
+            # 需要确保价值针对对手回合正确取反。
             current_player_at_start = initial_env_state_dict['current_player']
-            for node_in_path in reversed(search_path):
-                # Determine player at the node's state
-                node_player = node_in_path.state['current_player'] if node_in_path.state else current_player_at_start # Fallback for root
-                # Adjust value based on perspective
+            for node_in_path in reversed(search_path): # 反向遍历搜索路径
+                # 确定节点状态下的玩家
+                node_player = node_in_path.state['current_player'] if node_in_path.state else current_player_at_start # 根节点的后备
+                # 根据视角调整价值
                 relative_value = value if node_player == current_player_at_start else -value
-                node_in_path.update_value(relative_value)
+                node_in_path.update_value(relative_value) # 更新节点的访问次数和总价值
 
 
-        # After simulations, calculate action probabilities based on visit counts
+        # 模拟后，根据访问次数计算动作概率
         visit_counts = np.array([
             root_node.children[action].visit_count if action in root_node.children else 0
             for action in range(self.action_size)
         ])
 
-        if self.temperature == 0: # Choose greedily (inference)
+        if self.temperature == 0: # 贪婪地选择 (推理)
             action_idx = np.argmax(visit_counts)
             action_probs = np.zeros(self.action_size)
             action_probs[action_idx] = 1.0
-        else: # Sample probabilistically (self-play)
-            # Apply temperature scaling
+        else: # 概率性地采样 (自对弈)
+            # 应用温度缩放
             scaled_visits = np.power(visit_counts, 1.0 / self.temperature)
             if np.sum(scaled_visits) > 0:
                  action_probs = scaled_visits / np.sum(scaled_visits)
             else:
-                 # Fallback if all visit counts are zero (should be rare)
+                 # 如果所有访问次数都为零，则回退 (应该很少见)
                  print("Warning: All visit counts zero after MCTS.")
-                 # Assign uniform probability to valid actions from root
+                 # 从根节点为有效动作分配均匀概率
                  valid_actions_map = self._get_valid_actions_map_from_env_dict(initial_env_state_dict)
                  action_probs = np.zeros(self.action_size)
                  num_valid = len(valid_actions_map)
@@ -289,8 +396,16 @@ class MCTS:
     # --- Helper methods for state/action conversion ---
 
     def _get_nn_input_from_env(self, env: GameEnvironment):
-        """Converts GameEnvironment state to the neural network input tensor."""
-        # Based on the state representation defined earlier
+        """
+        将 GameEnvironment 状态转换为神经网络输入张量。
+
+        Args:
+            env (GameEnvironment): 游戏环境。
+
+        Returns:
+            np.ndarray: 神经网络输入张量。
+        """
+        # 基于先前定义的状态表示
         state_tensor = np.zeros((4, 2, 4), dtype=np.float32) # Channels, Height, Width
         current_player = env.current_player
 
@@ -300,62 +415,87 @@ class MCTS:
                 if piece:
                     piece_type_val = piece.piece_type.value # 1 to 4
                     if piece.revealed:
-                        state_tensor[2, r, c] = 1.0 # Revealed channel
+                        state_tensor[2, r, c] = 1.0 # 揭示的通道
                         if piece.player == current_player:
                             state_tensor[0, r, c] = piece_type_val
                         else:
                             state_tensor[1, r, c] = piece_type_val
-                    # else: Hidden pieces are implicitly represented by zeros in channels 0, 1, and 2
+                    # else: 隐藏的棋子由通道 0、1 和 2 中的零隐式表示
 
-        # Channel 3: Current player indicator
+        # 通道 3：当前玩家指示器
         state_tensor[3, :, :] = current_player
 
-        # Flatten or reshape as needed by the network input layer
-        # Assuming network expects (C, H, W)
+        # 根据网络输入层需要展平或重塑
+        # 假设网络期望 (C, H, W)
         return state_tensor
 
     def _get_valid_actions_map_from_env(self, env: GameEnvironment):
-        """Gets valid actions from the environment and maps them to indices."""
-        valid_actions_dict = env.valid_actions()
-        action_map = {}
-        for action_dict in valid_actions_dict:
-            idx = self._map_action_dict_to_index(action_dict, env.board)
-            if idx is not None:
-                action_map[idx] = action_dict # Store the original dict action
+        """
+        从环境中获取有效动作，并将它们映射到索引。
+
+        Args:
+            env (GameEnvironment): 游戏环境。
+
+        Returns:
+            dict: 有效动作的映射，键是动作索引，值是动作字典。
+        """
+        valid_actions_dict = env.valid_actions() # 获取环境中的有效动作字典
+        action_map = {} # 创建一个空字典来存储动作映射
+        for action_dict in valid_actions_dict: # 遍历有效动作字典
+            idx = self._map_action_dict_to_index(action_dict, env.board) # 将动作字典映射到索引
+            if idx is not None: # 检查索引是否有效
+                action_map[idx] = action_dict # 存储原始字典动作
         return action_map
 
     def _get_valid_actions_map_from_env_dict(self, env_state_dict):
-        """Gets valid actions from an environment state dictionary."""
-        temp_env = self._create_env_from_dict(env_state_dict)
-        return self._get_valid_actions_map_from_env(temp_env)
+        """
+        从环境状态字典中获取有效动作。
+
+        Args:
+            env_state_dict (dict): 环境状态字典。
+
+        Returns:
+            dict: 有效动作的映射，键是动作索引，值是动作字典。
+        """
+        temp_env = self._create_env_from_dict(env_state_dict) # 从环境状态字典创建临时环境
+        return self._get_valid_actions_map_from_env(temp_env) # 从临时环境中获取有效动作映射
 
 
     def _map_action_dict_to_index(self, action_dict, board):
-        """Maps an action dictionary from env.py to a flat index (0-72)."""
-        # (Duplicate of the Node method - consider refactoring to a common utility)
-        action_type = action_dict['type']
-        if action_type == 'reveal':
-            row, col = action_dict['position']
-            return row * 4 + col # 0-7
-        elif action_type == 'move' or action_type == 'attack':
-            from_row, from_col = action_dict['from']
-            to_row, to_col = action_dict['to']
-            d_row, d_col = to_row - from_row, to_col - from_col
+        """
+        将来自 env.py 的动作字典映射到一个扁平索引 (0-72)。
+        (与 Node 类中的方法重复 - 考虑重构为通用工具函数)
+        Args:
+            action_dict (dict): 动作字典，包含动作类型和相关参数。
+            board: 棋盘状态。
 
-            direction_idx = -1
+        Returns:
+            int: 动作的扁平索引。
+        """
+        # (与 Node 类中的方法重复 - 考虑重构为通用工具函数)
+        action_type = action_dict['type'] # 获取动作类型
+        if action_type == 'reveal': # 如果动作类型是揭示
+            row, col = action_dict['position'] # 获取揭示的位置
+            return row * 4 + col # 0-7
+        elif action_type == 'move' or action_type == 'attack': # 如果动作类型是移动或攻击
+            from_row, from_col = action_dict['from'] # 获取起始位置
+            to_row, to_col = action_dict['to'] # 获取目标位置
+            d_row, d_col = to_row - from_row, to_col - from_col # 计算行和列的差值
+
+            direction_idx = -1 # 初始化方向索引
             if (d_row, d_col) == (-1, 0): direction_idx = 0 # Up
             elif (d_row, d_col) == (1, 0): direction_idx = 1 # Down
             elif (d_row, d_col) == (0, -1): direction_idx = 2 # Left
             elif (d_row, d_col) == (0, 1): direction_idx = 3 # Right
 
-            if direction_idx != -1:
-                base_idx = 8 if action_type == 'move' else 40
+            if direction_idx != -1: # 如果方向索引有效
+                base_idx = 8 if action_type == 'move' else 40 # 设置基准索引
                 return base_idx + from_row * 16 + from_col * 4 + direction_idx # 8-39 (move), 40-71 (attack)
             else:
                 # This can happen if 'from' and 'to' are not adjacent
                 print(f"Warning: Invalid move/attack direction for action: {action_dict}")
                 return None
-        elif action_type == 'stay':
+        elif action_type == 'stay': # 如果动作类型是停留
             return 72 # 72
         else:
             print(f"Warning: Unknown action type: {action_type}")
@@ -363,7 +503,7 @@ class MCTS:
 
     def _map_index_to_action_dict(self, index: int):
         """Maps a flat index (0-72) back to an action dictionary."""
-         # (Duplicate of the Node method - consider refactoring to a common utility)
+         # (与 Node 类中的方法重复 - 考虑重构为通用工具函数)
         if 0 <= index <= 7: # Reveal
             row = index // 4
             col = index % 4
@@ -393,16 +533,16 @@ class MCTS:
         elif index == 72: # Stay
              # Need a way to determine the 'position' for the 'stay' action dict.
              # This might require passing context or modifying the env.
-             return {'type': 'stay', 'position': None} # Placeholder
+            return {'type': 'stay', 'position': None} # Placeholder
         else:
             raise ValueError(f"Invalid action index: {index}")
 
     def _create_env_from_dict(self, env_state_dict):
         """Creates a new GameEnvironment instance from a state dictionary."""
-        # This is challenging because env.py uses Piece objects.
-        # A deep copy or a reconstruction mechanism is needed.
-        # For simplicity, let's assume a deep copy works for now,
-        # but this might need significant refinement based on Piece object behavior.
+        # 这是一个挑战，因为 env.py 使用 Piece 对象。
+        # 需要深度复制或重建机制。
+        # 为简单起见，我们现在假设深度复制有效，
+        # 但可能需要根据 Piece 对象行为进行重大改进。
 
         # WARNING: This is a placeholder. Direct deepcopy might not work correctly
         # if Piece objects have complex internal state or references.
@@ -428,8 +568,8 @@ class MCTS:
                      # in simulation, which is incorrect for the actual game logic.
                      # We might need to pass the *original* env object for simulation.
                      print(f"Warning: Cannot accurately reconstruct hidden piece at ({r},{c}) from state dict.")
-                     # Let's try to find the piece in the original env if possible (hacky)
-                     # original_piece = self.env.board[r][c] # Accessing self.env is bad practice here
+                     # 让我们尝试在原始 env 中找到该棋子（hacky）
+                     # original_piece = self.env.board[r][c] # 在这里访问 self.env 是不好的做法
                      # if original_piece and not original_piece.revealed:
                      #     new_piece = Piece(original_piece.piece_type, original_piece.player)
                      #     new_piece.revealed = False
@@ -437,7 +577,7 @@ class MCTS:
                      #     new_players_pieces[new_piece.player].append(new_piece)
                      # else:
                      #     new_board[r][c] = None # Or handle error
-                     pass # Cannot reconstruct accurately
+                     pass # 无法准确重建
 
                 else: # Revealed piece
                     piece_type_enum, player_idx = cell_data
@@ -460,24 +600,23 @@ class MCTS:
         # This is complex and error-prone with the current state dict.
         # new_env.players = new_players_pieces # This is likely incomplete
 
-        # *** Conclusion: Simulating requires either passing a deepcopy of the
-        # original env object or significantly enhancing the state dictionary
-        # and reconstruction logic to handle hidden pieces and object references. ***
-        # Using deepcopy(self.env) might be the most practical approach here,
-        # assuming Piece objects are copyable.
+        # *** 结论：模拟需要传递原始 env 对象的深度复制，
+        # 或者显着增强状态字典和重建逻辑以处理隐藏的棋子和对象引用。***
+        # 使用 deepcopy(self.env) 可能是最实用的方法，
+        # 假设 Piece 对象是可复制的。
 
         # Let's try using deepcopy for simulation env creation:
         try:
-            sim_env = copy.deepcopy(self.env) # Use the env passed during MCTS init
+            sim_env = copy.deepcopy(self.env) # 使用 MCTS 初始化期间传递的 env
             # Update sim_env state based on the path taken to the current node
             # This requires tracking actions from the root or reconstructing state carefully.
-            # This whole simulation state management is the hardest part.
+            # 整个模拟状态管理是最困难的部分。
 
             # Alternative: Pass the actual env state dict and reconstruct carefully
             # This requires fixing the reconstruction logic above, especially for hidden pieces.
             # For now, returning a fresh env and relying on external state updates
             # during the simulation loop might be necessary, passing the env object around.
-            return copy.deepcopy(self.env) # Return a copy of the *initial* env for now
+            return copy.deepcopy(self.env) # 现在返回 *initial* env 的副本
 
         except Exception as e:
             print(f"Error deep copying environment: {e}")
@@ -490,9 +629,9 @@ class MCTS:
 if __name__ == '__main__':
     # This is just a placeholder example
     # Real usage requires setting up the environment, network, and config
-    print("MCTS module loaded. Requires integration with training loop.")
+    print("MCTS 模块已加载。需要与训练循环集成。")
 
-    # Example config
+    # 示例配置
     config = {
         'c_puct': 1.5,
         'num_mcts_simulations': 50,
@@ -518,10 +657,10 @@ if __name__ == '__main__':
     # Get initial state
     initial_env_state = env.get_state()
     # Need a way to get the NN input tensor from this state dict
-    # initial_nn_state = mcts._get_nn_input_from_env(env) # Assuming this works
+    # initial_nn_state = mcts._get_nn_input_from_env(env) # 假设这有效
 
     # print("Running MCTS simulation (with dummy network)...")
-    # This will likely fail due to the state reconstruction issues noted above.
+    # 这可能会由于上面提到的状态重建问题而失败。
     # mcts_result = mcts.run(initial_nn_state, initial_env_state)
     # print("MCTS Result (Probs):", mcts_result.action_probs)
     # print("MCTS Result (Value):", mcts_result.root_value)

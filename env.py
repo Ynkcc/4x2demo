@@ -2,6 +2,7 @@
 from collections import deque  # 用于存储历史记录
 import random  # 用于随机打乱棋子
 from enum import Enum  # 用于定义枚举类型
+import numpy as np
 
 # 定义棋子类型的枚举
 class PieceType(Enum):
@@ -33,8 +34,7 @@ class GameEnvironment:
         self.players = [[], []]  # 存储每个玩家拥有的棋子对象列表
         self.dead_pieces = [[], []]  # 存储每个玩家被吃掉的棋子对象列表
         self.current_player = 0  # 当前回合的玩家，0 或 1
-        self.move_counter = [0, 0]  # 记录每个玩家连续移动的次数 (似乎未使用)
-        self.history = deque(maxlen=6)  # 存储最近的游戏状态历史 (似乎未使用)
+        self.move_counter = []
         self.scores = [0, 0]  # 记录每个玩家的分数
         self.init_board()  # 初始化棋盘布局
 
@@ -67,45 +67,70 @@ class GameEnvironment:
 
     def get_state(self):
         """
-        获取当前游戏状态。
-        Returns:
-            dict: 包含棋盘、被吃棋子、当前玩家和分数的字典。
-                  棋盘状态中，未翻开的棋子表示为 "Hidden"。
+        获取当前游戏状态，返回一个包含 82 个特征值的 NumPy 数组。
         """
-        state = {
-            'board': [],  # 棋盘状态
-            'dead_pieces': self.dead_pieces,  # 被吃掉的棋子
-            'current_player': self.current_player,  # 当前玩家
-            'scores': self.scores  # 当前分数
-        }
-        # 遍历棋盘，构建状态表示
-        for row in self.board:
-            state_row = []
-            for cell in row:
-                if cell is None:
-                    state_row.append(None)  # 空位
-                elif not cell.revealed:
-                    state_row.append("Hidden")  # 未翻开的棋子
-                else:
-                    state_row.append((cell.piece_type, cell.player))  # 已翻开的棋子 (类型, 玩家)
-            state['board'].append(state_row)
-        return state
+        # 确定当前玩家和对手玩家
+        current_player = self.current_player
+        opponent_player = 1 - current_player
+
+        # 1. 棋盘状态 (64个值)
+        my_pieces_planes = np.zeros((4, 2, 4), dtype=int)  # 己方棋子
+        opponent_pieces_planes = np.zeros((4, 2, 4), dtype=int)  # 对方棋子
+
+        for row in range(2):
+            for col in range(4):
+                piece = self.board[row][col]
+                if piece and piece.revealed:
+                    piece_type_index = piece.piece_type.value - 1  # 棋子类型索引 (0-3)
+                    if piece.player == current_player:
+                        my_pieces_planes[piece_type_index, row, col] = 1
+                    else:
+                        opponent_pieces_planes[piece_type_index, row, col] = 1
+
+        my_pieces_flattened = my_pieces_planes.flatten()  # 展平
+        opponent_pieces_flattened = opponent_pieces_planes.flatten()  # 展平
+
+        # 2. 死亡棋子状态 (8个值)
+        my_dead_pieces = np.zeros(4, dtype=int)
+        opponent_dead_pieces = np.zeros(4, dtype=int)
+
+        for piece in self.dead_pieces[current_player]:
+            piece_type_index = piece.piece_type.value - 1
+            my_dead_pieces[piece_type_index] = 1
+
+        for piece in self.dead_pieces[opponent_player]:
+            piece_type_index = piece.piece_type.value - 1
+            opponent_dead_pieces[piece_type_index] = 1
+
+        # 3. 隐藏棋子状态 (8个值)
+        hidden_pieces = np.zeros((2, 4), dtype=int)
+        for row in range(2):
+            for col in range(4):
+                piece = self.board[row][col]
+                if piece and not piece.revealed:
+                    hidden_pieces[row, col] = 1
+        hidden_pieces_flattened = hidden_pieces.flatten()
+
+        # 4. 得分状态 (2个值)
+        my_score = self.scores[current_player]
+        opponent_score = self.scores[opponent_player]
+        
+        # 5. 计数器状态 (1个值)
+
+        # 组合所有特征
+        state = np.concatenate([
+            my_pieces_flattened,
+            opponent_pieces_flattened,
+            my_dead_pieces,
+            opponent_dead_pieces,
+            hidden_pieces_flattened,
+            [my_score, opponent_score],
+            self.move_counter
+        ])
+
+        return state  # 返回 NumPy 数组
 
     def step(self, action):
-        """
-        执行一个动作并更新游戏状态。
-        Args:
-            action (dict): 描述动作的字典，包含 'type' 和相关位置信息。
-                           'type' 可以是 'reveal', 'move', 'attack', 'stay'。
-        Returns:
-            tuple: (next_state, reward, done)
-                   next_state (dict): 执行动作后的新状态。
-                   reward (float): 执行该动作获得的奖励。
-                   done (bool): 游戏是否结束。
-        """
-        reward = 0  # 初始化奖励
-        scores_before = list(self.scores) # 记录动作前的分数
-
         # 根据动作类型执行相应操作
         if action['type'] == 'reveal':
             self.reveal(action['position'])
@@ -116,15 +141,12 @@ class GameEnvironment:
         elif action['type'] == 'attack':
             self.attack(action['from'], action['to'])
             self.move_counter[self.current_player] = 0 # 攻击重置移动计数
-        elif action['type'] == 'stay':
-            pass # 无操作
 
         # 检查游戏是否结束
-        done = self.is_done()
-        # 计算基于得分变化的奖励
-        reward += (self.scores[self.current_player] - scores_before[self.current_player])
-
-        # 切换玩家
+        done = False
+        reward = None
+        if self.scores[0] >= 60 or self.scores[1] >= 60:
+            pass# 切换玩家
         self.current_player = 1 - self.current_player
         return self.get_state(), reward, done
 
@@ -256,17 +278,6 @@ class GameEnvironment:
         # 如果连一个己方棋子都没有（全被吃了），actions会是空列表，游戏应该在is_done()中结束
 
         return actions
-
-    def is_done(self):
-        """
-        判断游戏是否结束。
-        结束条件：
-        - 任意一方分数达到或超过 60 分。
-        - 任意一方所有棋子（4个）都被吃掉。
-        Returns:
-            bool: 如果游戏结束则返回 True，否则返回 False。
-        """
-        return self.scores[0] >= 60 or self.scores[1] >= 60 or len(self.dead_pieces[0]) == 4 or len(self.dead_pieces[1]) == 4
 
     def get_winner(self):
         """
