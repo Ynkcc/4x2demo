@@ -10,7 +10,7 @@ import os
 import copy
 import pickle # For saving/loading replay buffer
 
-from env import GameEnvironment # Assuming env.py is in the same directory
+from Game import GameEnvironment # Assuming env.py is in the same directory
 from model import NeuralNetwork # Assuming model.py is in the same directory
 from mcts import MCTS, MCTSResult # Assuming mcts.py is in the same directory
 

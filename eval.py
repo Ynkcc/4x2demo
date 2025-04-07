@@ -1,4 +1,4 @@
-from env import GameEnvironment, PieceType
+from Game import GameEnvironment, PieceType
 from agent import DuelingDQNAgent,RandomAgent
 from train import flattenState,actionToIndex,indexToAction,stateSize,actionSize
 import numpy as np
