@@ -35,7 +35,7 @@ class GameEnvironment:
         self.dead_pieces = {-1:[],1:[]}
         self.current_player = 1  # 当前回合的玩家，-1 或 1
         self.move_counter = 0
-        self.max_move_counter = 7
+        self.max_move_counter = 16
         self.scores = {-1:0,1:0}
         self.init_board()  # 初始化棋盘布局
 

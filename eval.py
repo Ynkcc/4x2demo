@@ -1,58 +1,103 @@
-from Game import GameEnvironment, PieceType
-from agent import DuelingDQNAgent,RandomAgent
-from train import flattenState,actionToIndex,indexToAction,stateSize,actionSize
+# evaluate.py
+import torch
 import numpy as np
+from collections import defaultdict
+from Game import GameEnvironment
+from model import NeuralNetwork
+from mcts import MCTS
 
-# 评估脚本
-def evaluate_dqn_vs_random(dqn_agent, random_agent, episodes=100):
+def load_model(checkpoint_path, device='cuda'):
+    """加载训练好的模型"""
+    model = NeuralNetwork().to(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model'])
+    model.eval()
+    return model
+
+class AIPlayer:
+    """基于MCTS的AI玩家"""
+    def __init__(self, model, config):
+        self.mcts_config = {
+            'c_puct': 1.5,
+            'num_mcts_simulations': 50,  # 评估时使用更多模拟次数
+            'temperature': 0,  # 评估时使用确定性策略
+            'dirichlet_alpha': 0.3,
+            'dirichlet_epsilon': 0.0  # 评估时禁用噪声
+        }
+        self.model = model
+        self.mcts = None
+
+    def get_action(self, env):
+        self.mcts = MCTS(self.model, self.mcts_config)
+        result = self.mcts.run(env)
+        return np.argmax(result.action_probs)
+
+class RandomPlayer:
+    """随机策略玩家"""
+    def get_action(self, env):
+        valid_actions = env.valid_actions()
+        valid_indices = np.where(valid_actions == 1)[0]
+        return np.random.choice(valid_indices)
+
+def play_game(ai_player, random_player, ai_plays_as=1):
+    """进行一局游戏"""
     env = GameEnvironment()
-    dqn_wins = 0
-    random_wins = 0
-    draws = 0
-
-    for e in range(episodes):
-        state = env.reset()
-        for action in env.valid_actions():
-            env.reveal(action['position'])
-        state=env.get_state()
-        state = flattenState(state)
-        state = np.reshape(state, [1, stateSize])
-        done = False
-        while not done:
-            if env.current_player == 0:  # DQN agent's turn
-                valid_actions = env.valid_actions()
-                valid_action_indices = [actionToIndex(action) for action in valid_actions]
-                action_index = dqn_agent.act(state, valid_action_indices)
-                chosen_action = indexToAction(action_index, valid_actions)
-            else:  # Random agent's turn
-                valid_actions = env.valid_actions()
-                valid_action_indices = [actionToIndex(action) for action in valid_actions]
-                action_index = random_agent.act(state, valid_action_indices)
-                chosen_action = indexToAction(action_index, valid_actions)
-            
-            next_state, reward, done = env.step(chosen_action)
-            next_state = flattenState(next_state)
-            next_state = np.reshape(next_state, [1, stateSize])
-            state = next_state
-
-        if reward > 50:
-            if env.current_player == 0:
-                dqn_wins += 1
+    players = {1: ai_player if ai_plays_as == 1 else random_player,
+               -1: random_player if ai_plays_as == 1 else ai_player}
+    
+    while True:
+        current_player = players[env.current_player]
+        action = current_player.get_action(env)
+        
+        _, valid_actions, winner, done = env.step(action)
+        
+        if done:
+            # 转换胜利结果到玩家视角
+            if winner == ai_plays_as:
+                return 1  # AI胜
+            elif winner == -ai_plays_as:
+                return -1  # 随机玩家胜
             else:
-                random_wins += 1
+                return 0  # 平局
+            
+        if np.sum(valid_actions) == 0:
+            # 当前玩家无合法动作，对方获胜
+            return -1 if env.current_player == ai_plays_as else 1
+
+def evaluate(ai_model, num_games=100):
+    """评估函数"""
+    results = defaultdict(int)
+    config = {'device': 'cuda' if torch.cuda.is_available() else 'cpu'}
+    
+    ai_player = AIPlayer(ai_model, config)
+    random_player = RandomPlayer()
+
+    print("开始评估...")
+    for i in range(num_games):
+        # 交替先手
+        if i % 2 == 0:
+            result = play_game(ai_player, random_player, ai_plays_as=1)
         else:
-            draws += 1
+            result = play_game(ai_player, random_player, ai_plays_as=-1)
+        
+        if result == 1:
+            results['ai_wins'] += 1
+        elif result == -1:
+            results['random_wins'] += 1
+        else:
+            results['draws'] += 1
 
-    print(f"DQN Agent wins: {dqn_wins}")
-    print(f"Random Agent wins: {random_wins}")
-    print(f"Draws: {draws}")
+        if (i+1) % 10 == 0:
+            print(f"已完成 {i+1}/{num_games} 局对战")
 
+    # 计算胜率
+    total = num_games
+    print("\n评估结果:")
+    print(f"AI 胜局: {results['ai_wins']} ({results['ai_wins']/total:.1%})")
+    print(f"随机策略胜局: {results['random_wins']} ({results['random_wins']/total:.1%})")
+    print(f"平局: {results['draws']} ({results['draws']/total:.1%})")
 
-dqn_agent = DuelingDQNAgent(stateSize, actionSize)
-dqn_agent.load('dqn_model_500.h5')  # 使用你保存的模型文件名
-dqn_agent.epsilon=0
-# 创建 RandomAgent
-random_agent = RandomAgent(actionSize)
-
-# 评估 DQNAgent 与 RandomAgent 的对战结果
-evaluate_dqn_vs_random(dqn_agent, random_agent, episodes=10)
+if __name__ == "__main__":
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = load_model('./checkpoints/latest.pth', device)
+    evaluate(model, num_games=100)

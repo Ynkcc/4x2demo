@@ -1,4 +1,4 @@
-# 游戏的gui版本
+# 人类与ai进行游戏
 import sys
 import numpy as np
 from PySide6.QtWidgets import (QApplication, QWidget, QGridLayout, 
@@ -99,9 +99,8 @@ class GameGUI(QWidget):
                     continue
                 
                 # 设置棋子颜色
-                if piece.revealed:
-                    color = "lightblue" if piece.player == 1 else "lightcoral"
-                    btn.setStyleSheet(f"background-color: {color};")
+                color = "lightblue" if piece.player == 1 else "lightcoral"
+                btn.setStyleSheet(f"background-color: {color};")
                 
                 # 显示内容
                 if piece.revealed:
@@ -156,8 +155,8 @@ class GameGUI(QWidget):
             # 第二步：执行移动或攻击
             from_row, from_col = self.selected_pos
             action_index = self.calculate_action_index(from_row, from_col, row, col)
-
-            if (action_index is not None) and (self.env.valid_actions()[action_index] == 1):
+            
+            if action_index is not None:
                 self.execute_action(action_index)
             
             self.selected_pos = None  # 清除选中状态
@@ -171,10 +170,10 @@ class GameGUI(QWidget):
         d_col = to_col - from_col
         
         # 确定动作子索引
-        if d_row == -1 and d_col == 0: action_sub = 0   # 上
-        elif d_row == 1 and d_col == 0: action_sub = 1  # 下
-        elif d_col == -1 and d_row == 0: action_sub = 2 # 左
-        elif d_col == 1 and d_row == 0: action_sub = 3  # 右
+        if d_row == -1: action_sub = 0   # 上
+        elif d_row == 1: action_sub = 1  # 下
+        elif d_col == -1: action_sub = 2 # 左
+        elif d_col == 1: action_sub = 3  # 右
         else: return None  # 无效移动
         
         # 计算位置索引

@@ -8,97 +8,45 @@ import random
 import time
 import os
 import copy
-import pickle # For saving/loading replay buffer
+import pickle
 
-from Game import GameEnvironment # Assuming env.py is in the same directory
-from model import NeuralNetwork # Assuming model.py is in the same directory
-from mcts import MCTS, MCTSResult # Assuming mcts.py is in the same directory
+from Game import GameEnvironment
+from model import NeuralNetwork
+from mcts import MCTS, MCTSResult
 
 # --- Configuration ---
 CONFIG = {
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'num_iterations': 100,         # Total training iterations (self-play + train)
-    'num_self_play_games': 100,    # Games per self-play phase
-    'num_mcts_simulations': 50,    # MCTS simulations per move
-    'replay_buffer_size': 50000,   # Max size of the replay buffer
-    'train_batch_size': 128,       # Batch size for training NN
+    'num_iterations': 100,
+    'num_self_play_games': 100,
+    'num_mcts_simulations': 50,
+    'replay_buffer_size': 50000,
+    'train_batch_size': 128,
     'learning_rate': 0.001,
-    'c_puct': 1.5,                 # MCTS exploration constant
-    'temperature_initial': 1.0,    # Initial temperature for action sampling in self-play
-    'temperature_final': 0.1,      # Final temperature
-    'temperature_decay_steps': 30, # Steps over which temperature decays
-    'dirichlet_alpha': 0.3,        # Alpha for Dirichlet noise in MCTS root
-    'dirichlet_epsilon': 0.25,     # Epsilon for Dirichlet noise
-    'checkpoint_interval': 10,     # Save model every N iterations
+    'c_puct': 1.5,
+    'temperature_initial': 1.0,
+    'temperature_final': 0.1,
+    'temperature_decay_steps': 30,
+    'dirichlet_alpha': 0.3,
+    'dirichlet_epsilon': 0.25,
+    'checkpoint_interval': 10,
     'checkpoint_dir': './checkpoints',
     'replay_buffer_path': './replay_buffer.pkl',
-    'state_shape': (4, 2, 4),      # NN input shape (C, H, W)
-    'action_size': 73,             # Total number of possible actions
-    'max_game_moves': 100          # Prevent infinitely long games
+    'max_game_moves': 100
 }
 
 # --- Helper Functions ---
-
 def get_nn_input_from_env(env: GameEnvironment):
-    """Converts GameEnvironment state to the neural network input tensor."""
-    # (Copied/adapted from mcts.py - consider refactoring to a common utils file)
-    state_tensor = np.zeros(CONFIG['state_shape'], dtype=np.float32) # C, H, W
-    current_player = env.current_player
-
-    for r in range(2):
-        for c in range(4):
-            piece = env.board[r][c]
-            if piece:
-                piece_type_val = piece.piece_type.value # 1 to 4
-                if piece.revealed:
-                    state_tensor[2, r, c] = 1.0 # Revealed channel
-                    if piece.player == current_player:
-                        state_tensor[0, r, c] = piece_type_val # Current player piece type
-                    else:
-                        state_tensor[1, r, c] = piece_type_val # Opponent piece type
-                # else: Hidden pieces are implicitly represented by zeros
-
-    # Channel 3: Current player indicator (1 for current player, 0 otherwise)
-    state_tensor[3, :, :] = 1.0 # Always 1 from the perspective of the current player
-
-    return torch.tensor(state_tensor, dtype=torch.float32).to(CONFIG['device'])
-
-def map_index_to_action_dict(index: int):
-    """Maps a flat index (0-72) back to an action dictionary."""
-    # (Copied/adapted from mcts.py - consider refactoring)
-    if 0 <= index <= 7: # Reveal
-        row = index // 4
-        col = index % 4
-        return {'type': 'reveal', 'position': (row, col)}
-    elif 8 <= index <= 39: # Move
-        relative_idx = index - 8
-        direction_idx = relative_idx % 4
-        from_col = (relative_idx // 4) % 4
-        from_row = relative_idx // 16
-        d_row, d_col = [(-1, 0), (1, 0), (0, -1), (0, 1)][direction_idx]
-        to_row, to_col = from_row + d_row, from_col + d_col
-        if not (0 <= to_row < 2 and 0 <= to_col < 4):
-             raise ValueError(f"Calculated 'to' position ({to_row}, {to_col}) out of bounds for index {index}")
-        return {'type': 'move', 'from': (from_row, from_col), 'to': (to_row, to_col)}
-    elif 40 <= index <= 71: # Attack
-        relative_idx = index - 40
-        direction_idx = relative_idx % 4
-        from_col = (relative_idx // 4) % 4
-        from_row = relative_idx // 16
-        d_row, d_col = [(-1, 0), (1, 0), (0, -1), (0, 1)][direction_idx]
-        to_row, to_col = from_row + d_row, from_col + d_col
-        if not (0 <= to_row < 2 and 0 <= to_col < 4):
-             raise ValueError(f"Calculated 'to' position ({to_row}, {to_col}) out of bounds for index {index}")
-        return {'type': 'attack', 'from': (from_row, from_col), 'to': (to_row, to_col)}
-    elif index == 72: # Stay
-         # The 'stay' action needs context (which piece is staying).
-         # MCTS/Self-play needs to handle this. For now, return basic dict.
-         return {'type': 'stay', 'position': None} # Position needs context
-    else:
-        raise ValueError(f"Invalid action index: {index}")
+    """Convert environment state to network input tensors"""
+    state_np = env.get_state()
+    x_conv = state_np[:72].reshape(9, 2, 4).astype(np.float32)
+    x_fc = state_np[72:83].astype(np.float32)
+    return (
+        torch.tensor(x_conv, dtype=torch.float32),
+        torch.tensor(x_fc, dtype=torch.float32)
+    )
 
 def get_temperature(iteration):
-    """Calculates temperature based on the current iteration."""
     if iteration < CONFIG['temperature_decay_steps']:
         return CONFIG['temperature_initial'] - (CONFIG['temperature_initial'] - CONFIG['temperature_final']) * (iteration / CONFIG['temperature_decay_steps'])
     else:
@@ -110,7 +58,6 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=max_size)
 
     def add(self, experience):
-        # experience is a list of tuples: [(state, pi, z), (state, pi, z), ...]
         self.buffer.extend(experience)
 
     def sample(self, batch_size):
@@ -122,275 +69,269 @@ class ReplayBuffer:
     def save(self, path):
         with open(path, 'wb') as f:
             pickle.dump(self.buffer, f)
-        print(f"Replay buffer saved to {path}")
 
     def load(self, path):
-         if os.path.exists(path):
-             with open(path, 'rb') as f:
-                 self.buffer = pickle.load(f)
-             print(f"Replay buffer loaded from {path}")
-         else:
-             print(f"No replay buffer found at {path}, starting fresh.")
-
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                self.buffer = pickle.load(f)
 
 class AlphaZeroDataset(Dataset):
     def __init__(self, data):
-        # data is a list of (state_tensor, pi_array, z_value)
-        self.states = [item[0] for item in data]
-        self.pis = [torch.tensor(item[1], dtype=torch.float32) for item in data]
-        self.zs = [torch.tensor([item[2]], dtype=torch.float32) for item in data] # Ensure z is a tensor
+        self.states_conv = [item[0] for item in data]
+        self.states_fc = [item[1] for item in data]
+        self.pis = [torch.tensor(item[2], dtype=torch.float32) for item in data]
+        self.zs = [torch.tensor([item[3]], dtype=torch.float32) for item in data]
 
     def __len__(self):
-        return len(self.states)
+        return len(self.states_conv)
 
     def __getitem__(self, idx):
-        # State should already be a tensor
-        return self.states[idx], self.pis[idx], self.zs[idx]
+        return (
+            self.states_conv[idx],
+            self.states_fc[idx],
+            self.pis[idx],
+            self.zs[idx]
+        )
+
+
+# 训练经验扩充
+def apply_symmetry(state_conv_tensor, original_pi, symmetry_type):
+    """应用对称变换到棋盘状态和动作概率"""
+    if symmetry_type == 'none':
+        return state_conv_tensor.clone(), original_pi.copy()
+    
+    # 初始化变换后的概率分布
+    transformed_pi = np.zeros_like(original_pi)
+    
+    # 定义不同对称类型的变换规则
+    if symmetry_type == 'flip_row':
+        # 上下翻转
+        transformed_conv = torch.flip(state_conv_tensor.clone(), dims=[1])
+        row_trans = lambda r: 1 - r
+        col_trans = lambda c: c
+        action_map = {
+            0: 1,  # 上变下
+            1: 0,  # 下变上
+            2: 2,  # 左保持
+            3: 3,  # 右保持
+            4: 4   # 翻开保持
+        }
+    elif symmetry_type == 'flip_col':
+        # 左右翻转
+        transformed_conv = torch.flip(state_conv_tensor.clone(), dims=[2])
+        row_trans = lambda r: r
+        col_trans = lambda c: 3 - c
+        action_map = {
+            0: 0,  # 上保持
+            1: 1,  # 下保持
+            2: 3,  # 左变右
+            3: 2,  # 右变左
+            4: 4   # 翻开保持
+        }
+    elif symmetry_type == 'flip_both':
+        # 上下+左右翻转
+        transformed_conv = torch.flip(state_conv_tensor.clone(), dims=[1, 2])
+        row_trans = lambda r: 1 - r
+        col_trans = lambda c: 3 - c
+        action_map = {
+            0: 1,  # 上变下
+            1: 0,  # 下变上
+            2: 3,  # 左变右
+            3: 2,  # 右变左
+            4: 4   # 翻开保持
+        }
+    else:
+        raise ValueError("不支持的对称类型")
+
+    # 转换动作概率
+    for action_idx in np.where(original_pi > 0)[0]:
+        # 解析原始动作
+        pos_idx = action_idx // 5
+        sub_action = action_idx % 5
+        
+        # 原始位置
+        original_row = pos_idx // 4
+        original_col = pos_idx % 4
+        
+        # 转换后的位置
+        new_row = row_trans(original_row)
+        new_col = col_trans(original_col)
+        new_pos_idx = new_row * 4 + new_col
+        
+        # 转换后的子动作
+        new_sub_action = action_map[sub_action]
+        
+        # 新动作索引
+        new_action_idx = new_pos_idx * 5 + new_sub_action
+        
+        # 确保索引有效
+        if 0 <= new_action_idx < 40:
+            transformed_pi[new_action_idx] = original_pi[action_idx]
+
+    return transformed_conv, transformed_pi
 
 # --- Self-Play ---
 def run_self_play(network, replay_buffer, iteration):
-    """Generates training data through self-play."""
-    print(f"--- Starting Self-Play Phase (Iteration {iteration}) ---")
-    network.eval() # Set network to evaluation mode
-    games_played = 0
+    print(f"--- Starting Self-Play (Iteration {iteration}) ---")
+    network.eval()
     new_experiences = []
     start_time = time.time()
 
     mcts_config = {
         'c_puct': CONFIG['c_puct'],
         'num_mcts_simulations': CONFIG['num_mcts_simulations'],
-        'temperature': get_temperature(iteration), # Use temperature for sampling
+        'temperature': get_temperature(iteration),
         'dirichlet_alpha': CONFIG['dirichlet_alpha'],
-        'dirichlet_epsilon': CONFIG['dirichlet_epsilon'],
-        'action_size': CONFIG['action_size']
+        'dirichlet_epsilon': CONFIG['dirichlet_epsilon']
     }
 
     for game_num in range(CONFIG['num_self_play_games']):
         env = GameEnvironment()
-        env.reset()
-        game_history = [] # Store (state_tensor, pi, current_player) for the current game
-        mcts = MCTS(env, network, mcts_config) # Pass the *current* env instance
+        game_history = []
         move_count = 0
+        done = False
 
-        while not env.is_done() and move_count < CONFIG['max_game_moves']:
-            current_player = env.current_player
-            # Get NN input tensor for the current state
-            # Important: State must be from the perspective of the current player
-            state_tensor = get_nn_input_from_env(env)
-
-            # Run MCTS
-            # The MCTS run method needs the NN state tensor AND the env state dict
-            # The env state dict is needed for internal simulation/valid action checks
-            # NOTE: MCTS internal simulation logic needs to be robust (handling Piece objects, hidden state)
+        while not done and move_count < CONFIG['max_game_moves']:
+            mcts = MCTS(network, mcts_config)
+            state_conv, state_fc = get_nn_input_from_env(env)
+            
             try:
-                # Pass a deepcopy of the env to MCTS init or run to avoid side effects?
-                # Let's assume MCTS handles env state correctly internally for now.
-                # The MCTS class needs refinement for state handling.
-                mcts.env = copy.deepcopy(env) # Give MCTS a fresh copy for this turn's simulation
-                mcts_result = mcts.run(state_tensor.cpu().numpy(), env.get_state()) # MCTS runs on numpy arrays
-                action_probs = mcts_result.action_probs # pi
+                mcts_result = mcts.run(env)
+                action_probs = mcts_result.action_probs
+                valid_actions = env.valid_actions()
+                
+                if np.sum(valid_actions) == 0:
+                    break
 
-                # Store state and probabilities
-                game_history.append((state_tensor, action_probs, current_player))
-
-                # Choose action based on probabilities (with temperature)
-                # Ensure probabilities sum to 1
                 if np.sum(action_probs) == 0:
-                     print(f"Warning: MCTS returned all zero probabilities in game {game_num}, move {move_count}. Choosing random valid action.")
-                     # Fallback: choose a random valid action
-                     valid_actions_map = mcts._get_valid_actions_map_from_env(env)
-                     if not valid_actions_map: # Should not happen if game not done
-                         print("Error: No valid actions found in non-terminal state!")
-                         break # End game if stuck
-                     action_idx = random.choice(list(valid_actions_map.keys()))
-                else:
-                    # Normalize just in case
-                    action_probs = action_probs / np.sum(action_probs)
-                    # Sample action using temperature from MCTS config
-                    # Note: MCTS already applies temperature if > 0
-                    action_idx = np.random.choice(CONFIG['action_size'], p=action_probs)
+                    action_probs = valid_actions / np.sum(valid_actions)
 
-                # Convert action index to environment action format
-                action_dict = map_index_to_action_dict(action_idx)
+                action_idx = np.random.choice(len(action_probs), p=action_probs)
+                game_history.append((state_conv, state_fc, action_probs, env.current_player))
 
-                # Handle 'stay' action context if needed
-                if action_dict['type'] == 'stay':
-                    # Find a valid piece for the current player to stay with
-                    # This logic might need refinement based on game rules
-                    valid_stay_pos = None
-                    for r in range(2):
-                        for c in range(4):
-                            piece = env.board[r][c]
-                            if piece and piece.player == current_player and piece.revealed:
-                                valid_stay_pos = (r, c)
-                                break
-                        if valid_stay_pos: break
-                    if valid_stay_pos:
-                        action_dict['position'] = valid_stay_pos
-                    else:
-                        # This should not happen if 'stay' was a valid action from MCTS/env
-                        print(f"Warning: 'stay' action chosen but no valid piece found for player {current_player}. Skipping turn?")
-                        # Perhaps choose another action or end game? For now, let env handle it.
-                        pass
-
-
-                # Execute action
-                _, _, done = env.step(action_dict)
+                _, valid_actions, winner, done = env.step(action_idx)
                 move_count += 1
 
             except Exception as e:
-                print(f"Error during MCTS or env step in game {game_num}, move {move_count}: {e}")
-                import traceback
-                traceback.print_exc()
-                break # Stop this game if an error occurs
+                print(f"Error in game {game_num}: {e}")
+                break
 
-        # Game finished, determine winner and assign rewards (z)
-        winner = env.get_winner() # 0, 1, or None (draw/unfinished)
-        game_outcome = 0
-        if winner is not None:
-            game_outcome = 1 if winner == 0 else -1 # +1 for player 0 win, -1 for player 1 win
+        # Determine final outcome
+        if done:
+            game_outcome = winner
+        else:
+            if env.scores[1] > env.scores[-1]:
+                game_outcome = 1
+            elif env.scores[-1] > env.scores[1]:
+                game_outcome = -1
+            else:
+                game_outcome = 0
 
-        if move_count >= CONFIG['max_game_moves']:
-            print(f"Game {game_num} reached max moves.")
-            # Assign outcome based on score or consider it a draw (0)
-            if env.scores[0] > env.scores[1]: game_outcome = 1
-            elif env.scores[1] > env.scores[0]: game_outcome = -1
-            else: game_outcome = 0 # Draw
+        # Record experiences
+        for state_conv, state_fc, pi, player in game_history:
+            z = game_outcome * player
+            new_experiences.append((
+                state_conv.cpu(),
+                state_fc.cpu(),
+                pi,
+                z
+            ))
 
-        # Assign outcome to all steps in the game history
-        for state_tensor, pi, player in game_history:
-            # Outcome z is from the perspective of player 0 (+1 if 0 wins, -1 if 1 wins)
-            # If the state was recorded during player 1's turn, flip the outcome sign
-            z = game_outcome if player == 0 else -game_outcome
-            new_experiences.append((state_tensor.cpu(), pi, z)) # Store state tensor on CPU
+            # 生成三种对称变换的经验
+            for symmetry in ['flip_row', 'flip_col', 'flip_both']:
+                sym_conv, sym_pi = apply_symmetry(state_conv, pi, symmetry)
+                new_experiences.append((
+                    sym_conv.cpu(),
+                    state_fc.cpu(),  # 全局特征不需要变换
+                    sym_pi,
+                    z
+                ))
 
-        games_played += 1
-        if game_num % 10 == 0:
-             print(f" Self-Play Game {game_num}/{CONFIG['num_self_play_games']} finished. Winner: {winner}, Moves: {move_count}")
+        if (game_num+1) % 10 == 0:
+            print(f" Completed {game_num+1}/{CONFIG['num_self_play_games']} games")
 
-    # Add collected experiences to the replay buffer
     replay_buffer.add(new_experiences)
-    end_time = time.time()
-    print(f"--- Self-Play Phase Finished ({games_played} games, {len(new_experiences)} steps) ---")
-    print(f"   Duration: {end_time - start_time:.2f}s")
-    print(f"   Replay Buffer size: {len(replay_buffer)}")
-
+    print(f"--- Self-Play Completed ({len(new_experiences)} samples) ---")
+    print(f" Duration: {time.time()-start_time:.2f}s")
 
 # --- Training ---
 def train_network(network, optimizer, replay_buffer):
-    """Trains the neural network using data from the replay buffer."""
     if len(replay_buffer) < CONFIG['train_batch_size']:
-        print("Replay buffer too small, skipping training.")
+        print("Not enough samples for training")
         return
 
-    print(f"--- Starting Training Phase ---")
-    network.train() # Set network to training mode
+    print("--- Starting Training ---")
+    network.train()
     start_time = time.time()
-    total_loss = 0.0
-    policy_loss_total = 0.0
-    value_loss_total = 0.0
-
-    # Sample data and create DataLoader
+    
     sampled_data = replay_buffer.sample(CONFIG['train_batch_size'])
     dataset = AlphaZeroDataset(sampled_data)
-    # Pin memory if using GPU
-    pin_memory = CONFIG['device'] == 'cuda'
-    data_loader = DataLoader(dataset, batch_size=CONFIG['train_batch_size'], shuffle=True, pin_memory=pin_memory)
+    loader = DataLoader(dataset, batch_size=CONFIG['train_batch_size'], shuffle=True)
 
-    num_batches = 0
-    for batch in data_loader:
-        states, target_pis, target_zs = batch
-        states = states.to(CONFIG['device'])
+    total_loss = 0.0
+    for batch in loader:
+        states_conv, states_fc, target_pis, target_zs = batch
+        states_conv = states_conv.to(CONFIG['device'])
+        states_fc = states_fc.to(CONFIG['device'])
         target_pis = target_pis.to(CONFIG['device'])
         target_zs = target_zs.to(CONFIG['device'])
 
         optimizer.zero_grad()
-
-        # Forward pass
-        policy_logits, value_preds = network(states)
+        policy_logits, value_preds = network(states_conv, states_fc)
 
         # Calculate losses
-        # Policy loss: Cross-entropy between predicted policy logits and MCTS probabilities (pi)
-        # Ensure target_pis are probabilities (sum to 1) - MCTS should provide this
-        # Using log_softmax + NLLLoss is often more stable than Softmax + CrossEntropyLoss
-        policy_loss = F.cross_entropy(policy_logits, target_pis) # Assumes target_pis are probabilities
+        policy_loss = F.cross_entropy(policy_logits, target_pis)
+        value_loss = F.mse_loss(value_preds.squeeze(), target_zs.squeeze())
+        loss = policy_loss + value_loss
 
-        # Value loss: Mean Squared Error between predicted value and game outcome (z)
-        value_loss = F.mse_loss(value_preds, target_zs)
-
-        # Total loss
-        loss = policy_loss + value_loss # Can add weighting factors if needed
-
-        # Backward pass and optimization
         loss.backward()
         optimizer.step()
-
         total_loss += loss.item()
-        policy_loss_total += policy_loss.item()
-        value_loss_total += value_loss.item()
-        num_batches += 1
 
-    end_time = time.time()
-    avg_loss = total_loss / num_batches if num_batches > 0 else 0
-    avg_policy_loss = policy_loss_total / num_batches if num_batches > 0 else 0
-    avg_value_loss = value_loss_total / num_batches if num_batches > 0 else 0
-
-    print(f"--- Training Phase Finished ---")
-    print(f"   Duration: {end_time - start_time:.2f}s")
-    print(f"   Avg Loss: {avg_loss:.4f} (Policy: {avg_policy_loss:.4f}, Value: {avg_value_loss:.4f})")
+    avg_loss = total_loss / len(loader)
+    print(f"--- Training Completed ---")
+    print(f" Avg Loss: {avg_loss:.4f}")
+    print(f" Duration: {time.time()-start_time:.2f}s")
 
 # --- Main Loop ---
 if __name__ == "__main__":
     print(f"Using device: {CONFIG['device']}")
     os.makedirs(CONFIG['checkpoint_dir'], exist_ok=True)
 
-    # Initialize network, optimizer, and replay buffer
-    network = NeuralNetwork(CONFIG['state_shape'], CONFIG['action_size']).to(CONFIG['device'])
+    # Initialize components
+    network = NeuralNetwork().to(CONFIG['device'])
     optimizer = optim.Adam(network.parameters(), lr=CONFIG['learning_rate'])
     replay_buffer = ReplayBuffer(CONFIG['replay_buffer_size'])
 
-    # Load checkpoint and replay buffer if they exist
-    latest_checkpoint = None
-    if os.path.exists(CONFIG['checkpoint_dir']):
-        checkpoints = [f for f in os.listdir(CONFIG['checkpoint_dir']) if f.endswith('.pth')]
-        if checkpoints:
-            checkpoints.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
-            latest_checkpoint = os.path.join(CONFIG['checkpoint_dir'], checkpoints[-1])
-
-    start_iteration = 0
-    if latest_checkpoint:
-        print(f"Loading checkpoint: {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint, map_location=CONFIG['device'])
-        network.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_iteration = checkpoint['iteration'] + 1
-        print(f"Resuming from iteration {start_iteration}")
-        # Load replay buffer
+    # Load checkpoint if available
+    start_iter = 0
+    checkpoint_path = os.path.join(CONFIG['checkpoint_dir'], "latest.pth")
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        network.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        start_iter = checkpoint['iteration'] + 1
         replay_buffer.load(CONFIG['replay_buffer_path'])
-    else:
-        print("No checkpoint found, starting training from scratch.")
-
+        print(f"Resuming from iteration {start_iter}")
 
     # Training loop
-    for iteration in range(start_iteration, CONFIG['num_iterations']):
-        print(f"\n===== Iteration {iteration}/{CONFIG['num_iterations']} =====")
-
-        # 1. Self-Play Phase
-        run_self_play(network, replay_buffer, iteration)
-
-        # 2. Training Phase
+    for iter in range(start_iter, CONFIG['num_iterations']):
+        print(f"\n=== Iteration {iter+1}/{CONFIG['num_iterations']} ===")
+        
+        # Self-play phase
+        run_self_play(network, replay_buffer, iter)
+        
+        # Training phase
         train_network(network, optimizer, replay_buffer)
-
-        # 3. Save Checkpoint and Replay Buffer
-        if (iteration + 1) % CONFIG['checkpoint_interval'] == 0 or iteration == CONFIG['num_iterations'] - 1:
-            checkpoint_path = os.path.join(CONFIG['checkpoint_dir'], f"checkpoint_{iteration}.pth")
+        
+        # Save checkpoint
+        if (iter+1) % CONFIG['checkpoint_interval'] == 0:
             torch.save({
-                'iteration': iteration,
-                'model_state_dict': network.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
+                'iteration': iter,
+                'model': network.state_dict(),
+                'optimizer': optimizer.state_dict()
             }, checkpoint_path)
-            print(f"Checkpoint saved to {checkpoint_path}")
-            # Save replay buffer periodically
             replay_buffer.save(CONFIG['replay_buffer_path'])
+            print(f"Checkpoint saved at iteration {iter}")
 
-    print("\n===== Training Finished =====")
+    print("\n=== Training Completed ===")
