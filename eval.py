@@ -49,7 +49,7 @@ def play_game(ai_player, random_player, ai_plays_as=1):
         current_player = players[env.current_player]
         action = current_player.get_action(env)
         
-        _, valid_actions, winner, done = env.step(action)
+        _, _, winner, done = env.step(action)
         
         if done:
             # 转换胜利结果到玩家视角
@@ -60,9 +60,7 @@ def play_game(ai_player, random_player, ai_plays_as=1):
             else:
                 return 0  # 平局
             
-        if np.sum(valid_actions) == 0:
-            # 当前玩家无合法动作，对方获胜
-            return -1 if env.current_player == ai_plays_as else 1
+
 
 def evaluate(ai_model, num_games=100):
     """评估函数"""

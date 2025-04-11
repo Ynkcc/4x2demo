@@ -209,7 +209,7 @@ def run_self_play(network, replay_buffer, iteration):
                 action_idx = np.random.choice(len(action_probs), p=action_probs)
                 game_history.append((state_conv, state_fc, action_probs, env.current_player))
 
-                _, valid_actions, winner, done = env.step(action_idx)
+                _, current_player, winner, done = env.step(action_idx)
                 move_count += 1
 
             except Exception as e:

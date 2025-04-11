@@ -9,6 +9,7 @@ from model import NeuralNetwork
 config = {
     'c_puct': 1.5,
     'num_mcts_simulations': 50,
+    'max_mcts_simulations_depth':10,
     'temperature': 1.0,
     'dirichlet_alpha': 0.3,
     'dirichlet_epsilon': 0.25
@@ -92,7 +93,7 @@ class MCTS:
             while not node.is_leaf():
                 action, node = node.select_child(self.c_puct)
                 search_path.append(node)
-                _, valid_actions, _, done = current_env.step(action)
+                _, current_player, winner, done = current_env.step(action)
                 if done:
                     break
 
@@ -105,7 +106,7 @@ class MCTS:
                 node.expand(policy_probs, current_env)
                 value = value_estimate
             else:
-                value = current_env.scores[current_env.current_player]
+                value = winner * current_env.current_player
 
             # Backpropagation
             for node in reversed(search_path):

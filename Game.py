@@ -131,7 +131,7 @@ class GameEnvironment:
         return state  # 返回 NumPy 数组
     
     def clone(self):
-        copy.deepcopy(self)
+        return copy.deepcopy(self)
 
     def step(self, action_index):
         """
@@ -186,7 +186,8 @@ class GameEnvironment:
         if self.move_counter >= self.max_move_counter:
             done = True
             winner = 0
-
+        
+        current_player = self.current_player #保存当前玩家以返回
         # 切换玩家
         self.current_player = -self.current_player
         # 检查对手是否有有效行动
@@ -195,7 +196,7 @@ class GameEnvironment:
             winner = -self.current_player
             done = True
 
-        return self.get_state(),valid_actions,winner, done #下一个状态，对手的有效行动,胜利者，是否结束
+        return self.get_state(), current_player, winner, done #下一个状态，当前玩家, 胜利者，是否结束
     def reveal(self, position):
         """
         翻开指定位置的棋子。

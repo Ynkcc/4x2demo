@@ -189,7 +189,7 @@ class GameGUI(QWidget):
 
     def execute_action(self, action_index):
         """执行指定动作"""
-        _, valid_actions, winner, done = self.env.step(action_index)
+        _, _, winner, done = self.env.step(action_index)
         
         if done:
             self.handle_game_over(winner)
