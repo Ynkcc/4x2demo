@@ -18,19 +18,28 @@ config = {
 MCTSResult = namedtuple("MCTSResult", ["action_probs", "root_value"])
 
 class Node:
-    def __init__(self, prior: float, parent=None, action_taken=None):
+    def __init__(self, prior: float, parent=None, action_taken=None, player=None):
         self.parent = parent
         self.action_taken = action_taken
         self.children = {}
         self.visit_count = 0
         self.total_value = 0.0
-        self.prior = prior
+        self.Q = 0.0    #平均价值
+        self.prior = prior  #先验概率
+        self.player = player  # 新增玩家属性
 
     def expand(self, action_priors: np.ndarray, env):
         valid_actions = env.valid_actions()
+        current_player = self.player
         for action_index in np.where(valid_actions)[0]:
             prior = action_priors[action_index]
-            self.children[action_index] = Node(prior=prior, parent=self, action_taken=action_index)
+            child_player = -current_player  # 子节点玩家为父节点的对手
+            self.children[action_index] = Node(
+                prior=prior,
+                parent=self,
+                action_taken=action_index,
+                player=child_player
+            )
 
     def select_child(self, c_puct: float):
         best_score = -np.inf
@@ -71,10 +80,11 @@ class MCTS:
         self.dirichlet_alpha = config.get('dirichlet_alpha', 0.3)
         self.dirichlet_epsilon = config.get('dirichlet_epsilon', 0.25)
         self.action_size = 40
+        self.root_node = None
 
     def run(self, env: GameEnvironment):
         root_env = copy.deepcopy(env)
-        root_node = Node(prior=0)
+        root_node = Node(prior=0, player=root_env.current_player)  # 初始化根节点玩家
 
         # 根节点扩展
         state = root_env.get_state()
@@ -106,11 +116,14 @@ class MCTS:
                 node.expand(policy_probs, current_env)
                 value = value_estimate
             else:
-                value = winner * current_env.current_player
+                # 使用节点玩家计算价值
+                value = winner * node.player  # 修正价值计算
 
-            # Backpropagation
+            # Backpropagation（修正符号传播逻辑）
+            value_to_propagate = value
             for node in reversed(search_path):
-                node.update_value(value if node == root_node else -value)
+                node.update_value(value_to_propagate)
+                value_to_propagate = -value_to_propagate  # 交替取反
 
         # 生成动作概率
         visit_counts = np.array([child.visit_count for child in root_node.children.values()])
@@ -129,11 +142,10 @@ class MCTS:
         return MCTSResult(action_probs, root_node.total_value / (root_node.visit_count + 1e-6))
 
     def _apply_dirichlet(self, policy_logits, valid_actions):
-        policy_probs = np.exp(policy_logits) / np.sum(np.exp(policy_logits))
         noise = np.random.dirichlet([self.dirichlet_alpha] * self.action_size)
-        masked_noise = noise * valid_actions
-        masked_noise /= masked_noise.sum()
-        return (1 - self.dirichlet_epsilon) * policy_probs + self.dirichlet_epsilon * masked_noise
+        policy_probs = (1 - self.dirichlet_epsilon) * policy_logits + self.dirichlet_epsilon * noise
+        masked_policy_probs = self._mask_policy(policy_probs,valid_actions)
+        return masked_policy_probs
 
     def _mask_policy(self, policy_logits, valid_actions):
         masked = np.exp(policy_logits) * valid_actions

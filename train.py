@@ -17,7 +17,7 @@ from mcts import MCTS, MCTSResult
 # --- Configuration ---
 CONFIG = {
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'num_iterations': 100,
+    'num_iterations': 11,
     'num_self_play_games': 100,
     'num_mcts_simulations': 50,
     'replay_buffer_size': 50000,
