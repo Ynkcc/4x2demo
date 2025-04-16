@@ -1,4 +1,4 @@
-# 导入所需的库
+# Game.py
 from collections import deque  # 用于存储历史记录
 import random  # 用于随机打乱棋子
 from enum import Enum  # 用于定义枚举类型

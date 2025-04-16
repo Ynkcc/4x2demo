@@ -1,3 +1,4 @@
+# model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -91,4 +92,6 @@ class NeuralNetwork(nn.Module):
         self.eval()
         with torch.no_grad():
             policy, value = self.forward(x_conv_t, x_fc_t)
-        return policy.cpu().numpy()[0], value.cpu().numpy()[0]
+        policy_probs = F.softmax(policy, dim=1).cpu().numpy()[0]
+        value_scalar = value.cpu().numpy()[0][0]
+        return policy_probs, value_scalar

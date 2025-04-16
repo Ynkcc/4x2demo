@@ -1,3 +1,4 @@
+# train.py
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -13,13 +14,14 @@ import pickle
 from Game import GameEnvironment
 from model import NeuralNetwork
 from mcts import MCTS, MCTSResult
+from eval import evaluate
 
 # --- Configuration ---
 CONFIG = {
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'num_iterations': 11,
-    'num_self_play_games': 100,
-    'num_mcts_simulations': 50,
+    'num_iterations': 100,
+    'num_self_play_games': 50,
+    'num_mcts_simulations': 10,
     'replay_buffer_size': 50000,
     'train_batch_size': 128,
     'learning_rate': 0.001,
@@ -29,7 +31,7 @@ CONFIG = {
     'temperature_decay_steps': 30,
     'dirichlet_alpha': 0.3,
     'dirichlet_epsilon': 0.25,
-    'checkpoint_interval': 10,
+    'checkpoint_interval': 3,
     'checkpoint_dir': './checkpoints',
     'replay_buffer_path': './replay_buffer.pkl',
     'max_game_moves': 100
@@ -210,6 +212,7 @@ def run_self_play(network, replay_buffer, iteration):
                 game_history.append((state_conv, state_fc, action_probs, env.current_player))
 
                 _, current_player, winner, done = env.step(action_idx)
+                mcts.update_with_move(action_idx)
                 move_count += 1
 
             except Exception as e:
@@ -229,6 +232,7 @@ def run_self_play(network, replay_buffer, iteration):
 
         # Record experiences
         for state_conv, state_fc, pi, player in game_history:
+
             z = game_outcome * player
             new_experiences.append((
                 state_conv.cpu(),
@@ -280,7 +284,8 @@ def train_network(network, optimizer, replay_buffer):
         policy_logits, value_preds = network(states_conv, states_fc)
 
         # Calculate losses
-        policy_loss = F.cross_entropy(policy_logits, target_pis)
+        log_probs = F.log_softmax(policy_logits, dim=1)
+        policy_loss = F.kl_div(log_probs, target_pis, reduction='batchmean')
         value_loss = F.mse_loss(value_preds.squeeze(), target_zs.squeeze())
         loss = policy_loss + value_loss
 
@@ -332,6 +337,8 @@ if __name__ == "__main__":
                 'optimizer': optimizer.state_dict()
             }, checkpoint_path)
             replay_buffer.save(CONFIG['replay_buffer_path'])
+            evaluate(network, num_games=3)
+
             print(f"Checkpoint saved at iteration {iter}")
 
     print("\n=== Training Completed ===")
